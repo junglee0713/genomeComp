@@ -1,19 +1,7 @@
 all:
-  project_name: 'Cdiff_Redding'
-  root: '/scr1/users/leej39/Cdiff_pan'
-  contig_dir: '/scr1/users/leej39/Cdiff_pan/contigs'
+  root: '/scr1/users/leej39/genomeCompTest'
+  taxa_assembly: '/scr1/users/leej39/genomeCompTest/taxa_assembly.txt'
   admin_email: 'junglee0713@gmail.com' 
 
-reformat:
-  min_contig_length: 300
-
-hmm:
-  threads: 4
-
-ncbi_cog:
-  threads: 4
-
-pan_genome:
-  threads: 8
-  minbit: 0.5
-  mcl_inflation: 10
+download_genome:
+  script: '/home/leej39/genomeComp/scripts/download_genome.bash'

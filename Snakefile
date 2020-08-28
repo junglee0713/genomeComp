@@ -2,143 +2,132 @@ import configparser
 import yaml
 import re
 
-contig_dir = config['all']['contig_dir']
-anvio_output_dir = config['all']['root'] + '/anvio_output'
-genome_storage_fp = anvio_output_dir + '/' + config['all']['project_name'] + '-GENOMES.db'
-pangenome_output_dir = anvio_output_dir + '/pangenome_output'
-pangenome_result = pangenome_output_dir + '/' + config['all']['project_name'] + '-PAN.db'
-
-files, = glob_wildcards(contig_dir + '/{file}.fa')
+whole_genome_dir = config['all']['root']  + '/whole'
+rna_dir = config['all']['root'] + '/rna'
+ssu_dir = config['all']['root'] + '/16S'
+ssu_blastDB = config['all']['root'] + '/16S_blastDB'
+ANIb_out_dir = config['all']['root'] + '/ANIb_out'
+taxa_assembly_fp = config['all']['taxa_assembly']
 
 workdir: config['all']['root']
 
-########
-### function to create the external genome path tsv
-########
+#######
+#  create the list of assembly names
+#######
 
-def get_external_genome_path(contig_db_list, output_fp):
-    with open(output_fp, 'w') as f:
-        f.write('name\tcontigs_db_path\n')
-        for db in contig_db_list:
-            name = re.sub(anvio_output_dir + '/', '', db)
-            name = re.sub('/contigs.db', '', name)
-            name = re.sub('-contigs', '', name)
-            name = re.sub('-|\.', '_', name) 
-            f.write(name + '\t' + db + '\n')
+with open(taxa_assembly_fp) as f:
+    lines = f.readlines()
+assembly_names = []
+for line in lines:
+    assembly_names.append(line.split('\t')[1].rstrip())
 
 rule all:
+    input:
+        ANI_result = ANIb_out_dir + '/ANIb_percentage_identity.tab', 
+        pctid_result = config['all']['root'] + '/blast_hits.tsv'
+
+rule run_blast:
+    input:
+        sentinel = expand(ssu_blastDB + '/16S.fasta.{suffix}', suffix = ['nhr', 'nin', 'nsq']),
+        db = ssu_blastDB + '/16S.fasta',
+        query = ssu_blastDB + '/16S.fasta'
+    output:
+        config['all']['root'] + '/blast_hits.tsv'
+    shell:
+        """
+            blastn -evalue 1e-5 -outfmt 7 \
+            -db {input.db} \
+            -query {input.query} \
+            -num_threads 4 \
+            -out {output}
+        """
+
+rule make_blastDB:
     input: 
-        pangenome_result
-
-rule run_pangenome:
-    input:
-        genome_storage_fp
+        ssu_blastDB + '/16S.fasta'
     output:
-        pangenome_result
-    threads:
-        config['pan_genome']['threads']
+        expand(ssu_blastDB + '/16S.fasta.{suffix}', suffix = ['nhr', 'nin', 'nsq'])
+    shell:
+        """
+            makeblastdb -dbtype nucl -in {input}
+        """
+
+rule combine_16S:
+    input:
+        expand(ssu_dir + '/{assembly}_16S.fna', assembly = assembly_names)
+    output:
+        ssu_blastDB + '/16S.fasta'
+    shell:
+        """
+            cat {input} > {output}
+        """
+
+rule extract_16S:
+    input:
+        rna_dir + '/{assembly}_rna_from_genomic.fna'
+    output:
+        ssu_dir + '/{assembly}_16S.fna'
     params:
-        project_name = config['all']['project_name'],
-        pangenome_output_dir = pangenome_output_dir, 
-        minbit = config['pan_genome']['minbit'],
-        mcl_inflation = config['pan_genome']['mcl_inflation']
+        ssu_dir
     shell:
         """
-            anvi-pan-genome --genomes-storage {input} \
-                --project-name {params.project_name} \
-                --output-dir {params.pangenome_output_dir} \
-                --num-threads {threads} \
-                --minbit {params.minbit} \
-                --mcl-inflation {params.mcl_inflation} \
-                --use-ncbi-blast
+            mkdir -p {params}
+            okfasta searchdesc \
+                --input {input} \
+                --output {output} \
+                "product=16S ribosomal RNA"
         """
 
-rule build_genome_storage:
+rule ANIb:
     input:
-        anvio_output_dir + '/external_genome_path.tsv'
+        unzipped = expand(whole_genome_dir + '/{assembly}_genomic.fna', assembly = assembly_names)
     output:
-        genome_storage_fp
-    shell:
-        """
-            anvi-gen-genomes-storage \
-                --external-genomes {input} \
-                --output-file {output}
-        """
-
-rule external_genome_path:
-    input:
-        contig_db = expand(anvio_output_dir + '/{file}/contigs.db', file = files),
-        sentinel = expand(anvio_output_dir + '/{file}/.DONEncbi_cog', file = files)
-    output:
-        anvio_output_dir + '/external_genome_path.tsv'
-    run:
-        get_external_genome_path(input.contig_db, output[0])    
-
-########
-### If you are running COGs for the first time, 
-### you will need to set them up on your computer using 
-### anvi-setup-ncbi-cogs
-### Refer to http://merenlab.org/2016/06/22/anvio-tutorial-v2/#anvi-run-ncbi-cogs
-######## 
-
-rule ncbi_cogs:
-    input:
-        contig_db = ancient(anvio_output_dir + '/{file}/contigs.db'),
-        sentinel = anvio_output_dir + '/{file}/.DONEhmm'
-    output:
-        anvio_output_dir + '/{file}/.DONEncbi_cog'
-    threads:
-        config['ncbi_cog']['threads']
-    shell:
-        """
-            anvi-run-ncbi-cogs --contigs-db {input.contig_db} \
-                --num-threads {threads} --search-with blastp && \
-            touch {output}
-        """
-
-rule run_hmm:
-    input:
-        ancient(anvio_output_dir + '/{file}/contigs.db')
-    output:
-        anvio_output_dir + '/{file}/.DONEhmm'
-    threads:
-        config['hmm']['threads']
-    shell:
-        """
-            anvi-run-hmms --contigs-db {input} \
-                --num-threads {threads} && \
-            touch {output}
-        """
-
-rule get_contig_db:
-    input:
-        anvio_output_dir + '/{file}/reformatted_contigs.fa'
-    output:
-        anvio_output_dir + '/{file}/contigs.db'
+        ANIb_out_dir + '/ANIb_percentage_identity.tab'
     params:
-        file = '{file}'
+        indir = whole_genome_dir,
+        outdir = ANIb_out_dir
     shell:
         """
-            anvi-gen-contigs-database --contigs-fasta {input} \
-                --output-db-path {output} \
-                --project-name {params.file}
+            average_nucleotide_identity.py \
+                -i {params.indir} \
+                -o {params.outdir} \
+                -m ANIb -g --force
         """
 
-rule reformat_fasta:
-    input: 
-        contig_dir + '/{file}.fa'
-    output: 
-        anvio_output_dir + '/{file}/reformatted_contigs.fa'
-    params:
-        min_contig_length = config['reformat']['min_contig_length'],
-        report_file = anvio_output_dir + '/{file}/simplify-names.txt'
+rule unzip_rna:
+    input:
+        rna_dir + '/{assembly}_rna_from_genomic.fna.gz'
+    output:
+        rna_dir + '/{assembly}_rna_from_genomic.fna'
     shell:
         """
-            anvi-script-reformat-fasta {input} \
-                --output-file {output} \
-                --min-len {params.min_contig_length} \
-                --simplify-name \
-                --report-file {params.report_file}
+            gunzip {input}
+        """
+
+rule unzip_whole:
+    input:
+        whole_genome_dir + '/{assembly}_genomic.fna.gz'
+    output:
+        whole_genome_dir + '/{assembly}_genomic.fna'
+    shell:
+        """
+            gunzip {input}
+        """
+
+rule download_genome:
+    input:
+        taxa_assembly_fp
+    output:
+        whole = expand(whole_genome_dir + '/{assembly}_genomic.fna.gz', assembly = assembly_names),
+        rna = expand(rna_dir + '/{assembly}_rna_from_genomic.fna.gz', assembly = assembly_names)
+    params:
+        script = config['download_genome']['script'],
+        whole = whole_genome_dir,
+        rna = rna_dir
+    shell:
+        """
+            mkdir -p {params.whole} {params.rna}
+            {params.script} {input} {params.whole} {params.rna}
         """
 
 onsuccess:
